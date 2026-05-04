@@ -1,0 +1,384 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.utils import class_weight
+
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False
+
+class CaseRiskPredictorOptimized:
+    """案件风险预测模型 - 准确率优化版（仅使用原始特征）"""
+    
+    def __init__(self):
+        """初始化模型"""
+        self.model = None
+        self.scaler = None
+        self.label_encoder = None
+        self.features = None
+        self.risk_mapping = {0: '低风险', 1: '中风险', 2: '高风险'}
+    
+    def load_data(self, file_path):
+        """加载数据"""
+        try:
+            data = pd.read_csv(file_path)
+            print(f"成功加载数据，形状: {data.shape}")
+            print("\n风险等级分布:")
+            print(data['risk_level'].value_counts())
+            return data
+        except Exception as e:
+            print(f"加载数据失败: {e}")
+            return None
+    
+    def preprocess_data(self, data):
+        """数据预处理（仅使用原始特征，无交互特征）"""
+        print("\n数据预处理...")
+        
+        # 仅选择原始特征（不包含任何交互特征）
+        self.features = [
+            'hour',                      # 小时
+            'is_holiday',              # 是否节假日
+            'day_night',               # 昼夜时段
+            'surveillance_coverage',    # 监控覆盖率
+            'temperature',             # 气温
+            'population_density',       # 人口密度
+            'cases_7days',           # 近7天案件数
+            'cases_30days'            # 近30天案件数
+        ]
+        
+        print(f"选择的特征数量: {len(self.features)}")
+        print(f"特征列表: {self.features}")
+        
+        # 编码目标变量
+        print("\n编码目标变量...")
+        self.label_encoder = LabelEncoder()
+        data['risk_level_encoded'] = self.label_encoder.fit_transform(data['risk_level'])
+        
+        print(f"风险等级编码映射: {dict(zip(range(len(self.label_encoder.classes_)), self.label_encoder.classes_))}")
+        
+        # 划分特征和标签
+        X = data[self.features]
+        y = data['risk_level_encoded']
+        
+        # 数据分割
+        print("\n数据分割...")
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+        
+        print(f"训练集: {len(X_train)} 条, 测试集: {len(X_test)} 条")
+        
+        # 特征标准化
+        print("\n特征标准化...")
+        self.scaler = StandardScaler()
+        X_train = self.scaler.fit_transform(X_train)
+        X_test = self.scaler.transform(X_test)
+        
+        return X_train, X_test, y_train, y_test
+    
+    def train_optimized_model(self, X_train, y_train):
+        """训练优化后的模型"""
+        print("\n训练优化模型...")
+        
+        # 计算类别权重
+        class_weights = class_weight.compute_class_weight(
+            class_weight='balanced',
+            classes=np.unique(y_train),
+            y=y_train
+        )
+        class_weight_dict = dict(enumerate(class_weights))
+        
+        print(f"类别权重: {class_weight_dict}")
+        
+        # 随机森林优化
+        rf_model = RandomForestClassifier(
+            n_estimators=500,           # 大幅增加决策树数量
+            max_depth=25,              # 增加最大深度
+            min_samples_split=2,      # 减少最小分裂样本数
+            min_samples_leaf=1,       # 减少最小叶子节点样本数
+            max_features='sqrt',
+            random_state=42,
+            class_weight=class_weight_dict,
+            oob_score=True,
+            bootstrap=True,
+            n_jobs=-1
+        )
+        
+        # 梯度提升树
+        gb_model = GradientBoostingClassifier(
+            n_estimators=200,
+            max_depth=10,
+            learning_rate=0.1,
+            min_samples_split=3,
+            min_samples_leaf=2,
+            random_state=42
+        )
+        
+        # 集成投票
+        print("\n创建集成模型...")
+        ensemble_model = VotingClassifier(
+            estimators=[
+                ('rf', rf_model),
+                ('gb', gb_model)
+            ],
+            voting='soft',
+            weights=[2, 1]
+        )
+        
+        # 训练模型
+        print("训练集成模型...")
+        ensemble_model.fit(X_train, y_train)
+        
+        print("训练随机森林...")
+        rf_model.fit(X_train, y_train)
+        
+        print("训练梯度提升...")
+        gb_model.fit(X_train, y_train)
+        
+        rf_score = rf_model.oob_score_
+        print(f"随机森林OOB分数: {rf_score:.4f}")
+        
+        self.model = ensemble_model
+        self.rf_model = rf_model
+        self.gb_model = gb_model
+        
+        print("模型训练完成")
+        return ensemble_model
+    
+    def evaluate_model(self, X_test, y_test):
+        """评估模型"""
+        print("\n模型评估...")
+        
+        y_pred = self.model.predict(X_test)
+        y_pred_proba = self.model.predict_proba(X_test)
+        
+        # 计算评估指标
+        accuracy = accuracy_score(y_test, y_pred)
+        precision = precision_score(y_test, y_pred, average='weighted')
+        recall = recall_score(y_test, y_pred, average='weighted')
+        f1 = f1_score(y_test, y_pred, average='weighted')
+        
+        print(f"\n{'='*60}")
+        print(f"模型评估结果（集成模型）:")
+        print(f"{'='*60}")
+        print(f"准确率: {accuracy:.4f} ({accuracy*100:.2f}%)")
+        print(f"精确率: {precision:.4f}")
+        print(f"召回率: {recall:.4f}")
+        print(f"F1分数: {f1:.4f}")
+        print(f"{'='*60}")
+        
+        # 混淆矩阵
+        print("\n混淆矩阵:")
+        cm = confusion_matrix(y_test, y_pred)
+        print(cm)
+        
+        # 分类报告
+        print("\n分类报告:")
+        print(classification_report(y_test, y_pred,
+                                  target_names=['低风险', '中风险', '高风险']))
+        
+        return y_pred, y_pred_proba, accuracy, precision, recall, f1
+    
+    def create_all_visualizations(self, X_test, y_test, data, metrics):
+        """创建所有可视化图表"""
+        y_pred = self.model.predict(X_test)
+        
+        accuracy, precision, recall, f1 = metrics
+        
+        # 创建2x2的图表布局
+        fig, axes = plt.subplots(2, 2, figsize=(16, 14))
+        
+        # 1. 混淆矩阵
+        cm = confusion_matrix(y_test, y_pred)
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[0, 0],
+                   xticklabels=['低风险', '中风险', '高风险'],
+                   yticklabels=['低风险', '中风险', '高风险'],
+                   annot_kws={'size': 14})
+        axes[0, 0].set_title('混淆矩阵', fontsize=16, fontweight='bold')
+        axes[0, 0].set_xlabel('预测标签', fontsize=12)
+        axes[0, 0].set_ylabel('真实标签', fontsize=12)
+        
+        # 2. 特征重要性排序（柱状图）
+        importances = self.rf_model.feature_importances_
+        sorted_idx = np.argsort(importances)[::-1]
+        features_sorted = [self.features[i] for i in sorted_idx]
+        importances_sorted = importances[sorted_idx]
+        
+        colors = plt.cm.Blues(np.linspace(0.4, 0.9, len(features_sorted)))
+        axes[0, 1].barh(range(len(features_sorted)), importances_sorted, color=colors, edgecolor='black')
+        axes[0, 1].set_yticks(range(len(features_sorted)))
+        axes[0, 1].set_yticklabels(features_sorted, fontsize=11)
+        axes[0, 1].set_xlabel('重要性', fontsize=12)
+        axes[0, 1].set_title('特征重要性排序', fontsize=16, fontweight='bold')
+        axes[0, 1].invert_yaxis()
+        
+        for i, val in enumerate(importances_sorted):
+            axes[0, 1].text(val + 0.002, i, f'{val:.4f}', va='center', fontsize=9)
+        
+        # 3. 案件风险等级分布（饼图）
+        risk_counts = data['risk_level'].value_counts()
+        labels = risk_counts.index.tolist()
+        sizes = risk_counts.values
+        colors_pie = ['#4CAF50', '#FFC107', '#F44336']
+        explode = (0.02, 0.02, 0.02)
+        
+        wedges, texts, autotexts = axes[1, 0].pie(sizes, explode=explode, labels=labels, colors=colors_pie,
+                                                   autopct='%1.1f%%', shadow=True, startangle=90,
+                                                   textprops={'fontsize': 12})
+        for autotext in autotexts:
+            autotext.set_color('white')
+            autotext.set_fontweight('bold')
+            autotext.set_fontsize(11)
+        axes[1, 0].set_title('案件风险等级分布', fontsize=16, fontweight='bold')
+        
+        legend_labels = [f'{label} ({count}条)' for label, count in zip(labels, sizes)]
+        axes[1, 0].legend(wedges, legend_labels, title="风险等级", loc="center left",
+                          bbox_to_anchor=(1, 0, 0.5, 1), fontsize=10)
+        
+        # 4. 模型评估指标（柱状图）
+        metrics_names = ['准确率', '精确率', '召回率', 'F1分数']
+        values = [accuracy, precision, recall, f1]
+        colors_metrics = ['#3498DB', '#2ECC71', '#E74C3C', '#9B59B6']
+        
+        bars = axes[1, 1].bar(metrics_names, values, color=colors_metrics, edgecolor='black', width=0.6)
+        axes[1, 1].set_ylabel('分数', fontsize=12)
+        axes[1, 1].set_title('模型评估指标', fontsize=16, fontweight='bold')
+        axes[1, 1].set_ylim([0, 1.15])
+        
+        for bar, val in zip(bars, values):
+            axes[1, 1].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+                          f'{val:.4f}', ha='center', va='bottom', fontsize=12, fontweight='bold')
+        
+        plt.tight_layout()
+        plt.savefig('case_risk_model_results.png', dpi=150, bbox_inches='tight')
+        print("\n可视化结果已保存: case_risk_model_results.png")
+        plt.close()
+        
+        # 保存单独的图表
+        self.save_separate_charts(y_test, y_pred, data, metrics)
+        
+        return accuracy
+    
+    def save_separate_charts(self, y_test, y_pred, data, metrics):
+        """保存单独的图表"""
+        accuracy, precision, recall, f1 = metrics
+        
+        # 1. 混淆矩阵
+        plt.figure(figsize=(10, 8))
+        cm = confusion_matrix(y_test, y_pred)
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                   xticklabels=['低风险', '中风险', '高风险'],
+                   yticklabels=['低风险', '中风险', '高风险'],
+                   annot_kws={'size': 16})
+        plt.title('混淆矩阵', fontsize=16, fontweight='bold')
+        plt.xlabel('预测标签', fontsize=12)
+        plt.ylabel('真实标签', fontsize=12)
+        plt.tight_layout()
+        plt.savefig('01_confusion_matrix.png', dpi=150, bbox_inches='tight')
+        plt.close()
+        print("已保存: 01_confusion_matrix.png")
+        
+        # 2. 特征重要性排序（柱状图）
+        plt.figure(figsize=(12, 8))
+        importances = self.rf_model.feature_importances_
+        sorted_idx = np.argsort(importances)[::-1]
+        features_sorted = [self.features[i] for i in sorted_idx]
+        importances_sorted = importances[sorted_idx]
+        
+        colors = plt.cm.Blues(np.linspace(0.4, 0.9, len(features_sorted)))
+        bars = plt.bar(range(len(features_sorted)), importances_sorted, color=colors, edgecolor='black')
+        plt.xticks(range(len(features_sorted)), features_sorted, rotation=45, ha='right', fontsize=11)
+        plt.xlabel('特征', fontsize=12)
+        plt.ylabel('重要性', fontsize=12)
+        plt.title('特征重要性排序', fontsize=16, fontweight='bold')
+        
+        for bar, val in zip(bars, importances_sorted):
+            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.002,
+                    f'{val:.4f}', ha='center', va='bottom', fontsize=9)
+        
+        plt.tight_layout()
+        plt.savefig('02_feature_importance.png', dpi=150, bbox_inches='tight')
+        plt.close()
+        print("已保存: 02_feature_importance.png")
+        
+        # 3. 案件风险等级分布（饼图）
+        plt.figure(figsize=(10, 8))
+        risk_counts = data['risk_level'].value_counts()
+        labels = risk_counts.index.tolist()
+        sizes = risk_counts.values
+        colors_pie = ['#4CAF50', '#FFC107', '#F44336']
+        explode = (0.02, 0.02, 0.02)
+        
+        wedges, texts, autotexts = plt.pie(sizes, explode=explode, labels=labels, colors=colors_pie,
+                                           autopct='%1.1f%%', shadow=True, startangle=90,
+                                           textprops={'fontsize': 14})
+        for autotext in autotexts:
+            autotext.set_color('white')
+            autotext.set_fontweight('bold')
+            autotext.set_fontsize(12)
+        
+        plt.title('案件风险等级分布', fontsize=16, fontweight='bold')
+        plt.legend(wedges, [f'{label} ({count}条)' for label, count in zip(labels, sizes)],
+                  title="风险等级", loc="center left", bbox_to_anchor=(1, 0, 0.5, 1), fontsize=11)
+        
+        plt.tight_layout()
+        plt.savefig('03_risk_distribution.png', dpi=150, bbox_inches='tight')
+        plt.close()
+        print("已保存: 03_risk_distribution.png")
+        
+        # 4. 模型评估指标（柱状图）
+        plt.figure(figsize=(10, 6))
+        metrics_names = ['准确率', '精确率', '召回率', 'F1分数']
+        values = [accuracy, precision, recall, f1]
+        colors_metrics = ['#3498DB', '#2ECC71', '#E74C3C', '#9B59B6']
+        
+        bars = plt.bar(metrics_names, values, color=colors_metrics, edgecolor='black', width=0.6)
+        plt.ylabel('分数', fontsize=12)
+        plt.title('模型评估指标', fontsize=16, fontweight='bold')
+        plt.ylim([0, 1.15])
+        
+        for bar, val in zip(bars, values):
+            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+                    f'{val:.4f}', ha='center', va='bottom', fontsize=12, fontweight='bold')
+        
+        plt.tight_layout()
+        plt.savefig('04_model_metrics.png', dpi=150, bbox_inches='tight')
+        plt.close()
+        print("已保存: 04_model_metrics.png")
+
+def main():
+    """主函数"""
+    print("="*70)
+    print("案件风险预测模型 - 准确率优化版（仅原始特征）")
+    print("="*70)
+    
+    predictor = CaseRiskPredictorOptimized()
+    
+    file_path = 'case_risk_dataset.csv'
+    data = predictor.load_data(file_path)
+    if data is None:
+        print("数据加载失败，程序退出")
+        return
+    
+    X_train, X_test, y_train, y_test = predictor.preprocess_data(data)
+    predictor.train_optimized_model(X_train, y_train)
+    y_pred, y_pred_proba, accuracy, precision, recall, f1 = predictor.evaluate_model(X_test, y_test)
+    
+    print("\n生成可视化图表...")
+    metrics = (accuracy, precision, recall, f1)
+    predictor.create_all_visualizations(X_test, y_test, data, metrics)
+    
+    print("\n" + "="*70)
+    print("模型训练完成！")
+    print(f"最终准确率: {accuracy:.4f} ({accuracy*100:.2f}%)")
+    print("="*70)
+    print("\n生成的文件:")
+    print("综合图表: case_risk_model_results.png")
+    print("单独图表: 01-04_*.png")
+
+if __name__ == "__main__":
+    main()
